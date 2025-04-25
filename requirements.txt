@@ -1,0 +1,16 @@
+faiss-cpu
+langchain
+langchain-community
+ffmpeg-python
+numpy
+torch
+opencv-python
+sentence_transformers
+transformers
+whisper
+youtube-transcript-api
+moviepy
+yt_dlp
+streamlit
+loguru
+tensorflow
