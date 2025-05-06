@@ -3,3 +3,6 @@ __pycache__/
 *.webm
 data/
 video_chatbot_*/
+utils/
+TransNetV2/
+logging_file.log
