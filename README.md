@@ -108,3 +108,8 @@ This stage preprocesses the video and builds the searchable vector store.
 > This architecture enables scalable, multimodal video search and Q&A—blending visual understanding with conversational AI.
 
 ---
+
+
+![alt text](/assets/UI.png)
+
+![alt text](/assets/architecture.png)

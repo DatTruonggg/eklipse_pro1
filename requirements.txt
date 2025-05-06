@@ -13,4 +13,3 @@ moviepy
 yt_dlp
 streamlit
 loguru
-tensorflow

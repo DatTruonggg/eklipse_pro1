@@ -1,115 +1,139 @@
 import os
-import time
 import streamlit as st
+import time
 import torch
-from transformers import CLIPModel, CLIPProcessor
-from langchain_community.embeddings import HuggingFaceEmbeddings
-
+from src.process_video import VideoProcessor
+from src.embedding import EmbeddingService
+from src.transcript import TranscriptionService
+from src.retriever import ContextRetriever
+from src.chat import ChatbotEngine
+from src.store import VectorStore
 from logs import log
-from utils.processor.video_processor import VideoProcessor
-from utils.transcription.service import TranscriptionService
-from utils.vectorstore.text import TextVectorStore
-from utils.vectorstore.image import ImageVectorStore
-from utils.vectorstore.manager import VectorStoreManager
-from utils.context_retriever import ContextRetriever
-from utils.chat_engine import ChatbotEngine
 
+torch.classes.__path__ = [os.path.join(torch.__path__[0], torch.classes.__file__)] 
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=3600)  # Cache for 1 hour
 def process_video(video_source):
-    log.info("Processing video")
+    """Cached video processing function"""
+    log.info("Starting video processing")
     start_time = time.time()
-
-    # Init services
+    
+    # Initialize services
     processor = VideoProcessor(video_source)
     transcriber = TranscriptionService()
-
-    # Embedder models
-    text_embedder = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-    clip_model = CLIPModel.from_pretrained(
-            "openai/clip-vit-base-patch32", 
-            device_map="cpu")
+    embedder = EmbeddingService()
+    vectorstore = VectorStore()
     
-    clip_processor = CLIPProcessor.from_pretrained(
-            "openai/clip-vit-base-patch32",
-            cache_dir=os.path.expanduser("~/.cache/huggingface/clip"))
+    try:
+        # Download/process video
+        video_path = (processor.download_youtube_video() 
+                      if 'youtube.com' in str(video_source) 
+                      else processor.process_uploaded_file(video_source))
+        log.info(f"Video downloaded/processed: {video_path}")
+        
+        # Extract frames (limit to reduce processing time)
+        frames = processor.extract_frames()
+        
+        # Get Transcript
+        if video_source and 'youtube.com' in str(video_source):
+            transcript_data = transcriber.get_youtube_transcript(video_source)
+        else:
+            transcript_data = transcriber.get_transcription(video_source)
+
+        context_vectorstore, image_vectorstore = vectorstore.embed_and_store(transcript_data)
+        
+        log.info(f"Video processing completed in {time.time() - start_time:.2f} seconds")
+        
+        return context_vectorstore, image_vectorstore, transcript_data
     
-    # VectorStores
-    text_store = TextVectorStore(embedder=text_embedder)
-    image_store = ImageVectorStore(embedder=text_embedder, processor=clip_processor, model=clip_model)
-    vectorstore = VectorStoreManager(text_store=text_store, image_store=image_store)
-    
-    # Step 2: Extract frames
-    frames = processor.extract_frames(method='interval', interval=5)
-    log.info(frames)
-    log.info('done')
-    # Step 3: Transcribe
-    transcript_data = transcriber.get_transcription(video_source)
-
-
-    # Step 4: Build vectorstore
-    text_vectorstore = vectorstore.store_text(transcript_data['segments'])
-    image_vectorstore = vectorstore.store_image(frames['image'], frames['timestamp'])
-
-    log.info(f"Done processing in {time.time() - start_time:.2f}s")
-    return text_vectorstore, image_vectorstore, transcript_data
-
+    except Exception as e:
+        log.error(f"Video processing error: {e}")
+        raise
 
 def main():
-    st.set_page_config(page_title="Video Content Chatbot", layout="wide")
-    st.title("Video Content Chatbot")
-
-    # Input type
-    input_type = st.sidebar.radio("Choose Input Method", ["YouTube Link", "Upload Video"])
-
-    # Video input
+    st.set_page_config(
+        page_title="Video RAG", 
+        page_icon="🎥", 
+        layout="wide"
+    )
+    
+    # Title
+    st.title("🎬 Video RAG")
+    
+    # Input method selection in main content area
+    input_type = st.radio(
+        "Choose Input Method", 
+        ["YouTube Link", "Video File Upload"]
+    )
+    
+    # Video Input
     if input_type == "YouTube Link":
-        video_source = st.sidebar.text_input("Paste YouTube URL")
+        video_source = st.text_input("Enter YouTube Video URL below:")
         uploaded_file = None
     else:
         video_source = None
-        uploaded_file = st.sidebar.file_uploader("Upload .mp4/.mov", type=['mp4', 'mov'])
-
+        uploaded_file = st.file_uploader(
+            "Upload Video File", 
+            type=['mp4', 'avi', 'mov']
+        )
+    
+    # Process Video
     if video_source or uploaded_file:
         try:
-            with st.spinner("Processing..."):
-                text_vectorstore, image_vectorstore, transcript_data = process_video(video_source or uploaded_file)
-
-            # Init retriever & chatbot
-            retriever = ContextRetriever(
-                text_vectorstore=text_vectorstore,
-                image_vectorstore=image_vectorstore,
-                k=10
-            )
+            # Use cached processing
+            with st.spinner('Processing video...'):
+                context_vectorstore, image_vectorstore, transcript_data = process_video(video_source or uploaded_file)
+            
+            # Chatbot and Context Retrieval
+            retriever = ContextRetriever(context_vectorstore, image_vectorstore)
             chatbot = ChatbotEngine()
 
-            # UI Layout
+            # Main Content Layout: Two columns for better structure
             col1, col2 = st.columns([2, 1])
-
+            
             with col1:
-                st.subheader("Ask about the video 👇")
-                query = st.text_input("What do you want to know?")
-                if st.button("Get Answer"):
-                    context = retriever.retrieve_context(query)
-                    response = chatbot.generate_response(context, query)
-                    st.markdown("### Chatbot says:")
-                    st.write(response)
-
+                st.markdown(
+                    "<h1 style='color: #EC5331;'>📽️ Video Details</h1>",
+                    unsafe_allow_html=True,
+                )
+                
+                # Embed YouTube video using the video ID
+                if video_source:
+                    video_id = video_source.split("=")[-1]
+                    st.markdown(
+                        f'<iframe width="490" height="315" src="https://www.youtube.com/embed/{video_id}?start=90&autoplay=1" frameborder="0" allowfullscreen></iframe>',
+                        unsafe_allow_html=True,
+                    )
+                    
+                st.markdown("### Video Transcript")
+                transcript_text = transcript_data.get("text", "")
+                st.markdown(
+                    f"<div style='height: 400px; overflow-y: scroll;'>{transcript_text}</div>",
+                    unsafe_allow_html=True,
+                )
+            
             with col2:
-                if video_source and "youtube.com" in str(video_source):
-                    video_id = video_source.split("v=")[-1]
-                    st.markdown("#### Embedded YouTube")
-                    st.markdown(f'<iframe width="480" height="280" src="https://www.youtube.com/embed/{video_id}" frameborder="0" allowfullscreen></iframe>', unsafe_allow_html=True)
+                st.header("Video Q&A")
+                query = st.text_input("Ask a question about the video content")
 
-                st.markdown("#### Transcript Preview")
-                st.markdown(f"<div style='height: 350px; overflow-y: scroll; background-color: #f9f9f9; padding: 10px'>{transcript_data['text']}</div>", unsafe_allow_html=True)
-
+                if st.button("Get Answer"):
+                    # Retrieve and generate response
+                    text_context = retriever.retrieve_context(query)
+                    log.info(f"Retrieved context: {text_context}")
+                    response = chatbot.generate_response(
+                        context=text_context, 
+                        query=query
+                    )
+                    
+                    st.markdown("### Response")
+                    st.write(response)
+            
         except Exception as e:
-            st.error(f"Error: {e}")
-            log.error(f"[App Error] {e}")
+            st.error(f"Processing Error: {e}")
+            log.error(f"Streamlit app error: {e}")
+    
     else:
-        st.info("Please upload a video or paste a YouTube URL to get started.")
-
+        st.markdown("### 🚀 Welcome to Video RAG")
 
 if __name__ == "__main__":
     main()
